@@ -1,0 +1,48 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: github-latest-release
+spec:
+  entrypoint: get-latest-release
+  arguments:
+    parameters:
+      - name: repo
+        description: "GitHub repository (owner/repo)"
+      - name: gh-image
+        description: "Image with gh CLI"
+        default: "ghcr.io/daedaluz/argo-templates/gh:latest"
+
+  templates:
+    - name: get-latest-release
+      inputs:
+        parameters:
+          - name: repo
+          - name: gh-image
+      container:
+        image: "{{inputs.parameters.gh-image}}"
+        command: [sh, -c]
+        args:
+          - |
+            set -eu
+
+            REPO="{{inputs.parameters.repo}}"
+
+            TAG=$(gh release view --repo "${REPO}" --json tagName -q .tagName)
+            echo "Latest release: ${TAG}"
+
+            gh release view --repo "${REPO}" \
+              --json tagName,name,body,createdAt,publishedAt,url,author,assets \
+              > /tmp/release.json
+
+            echo "${TAG}" > /tmp/version
+        envFrom:
+          - secretRef:
+              name: github-token
+      outputs:
+        parameters:
+          - name: version
+            valueFrom:
+              path: /tmp/version
+        artifacts:
+          - name: release-info
+            path: /tmp/release.json

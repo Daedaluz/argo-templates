@@ -1,0 +1,56 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: git-clone
+spec:
+  entrypoint: clone
+  arguments:
+    parameters:
+      - name: repo
+        description: "Git repository URL"
+      - name: version
+        description: "Branch, tag, or commit to checkout"
+        default: "HEAD"
+      - name: shallow
+        description: "Shallow clone (depth=1)"
+        default: "true"
+      - name: recursive
+        description: "Recursively clone submodules"
+        default: "false"
+
+  templates:
+    - name: clone
+      inputs:
+        parameters:
+          - name: repo
+          - name: version
+          - name: shallow
+          - name: recursive
+      script:
+        image: ghcr.io/daedaluz/argo-templates/gh:latest
+        command: [sh]
+        source: |
+          set -eu
+
+          REPO="{{inputs.parameters.repo}}"
+          VERSION="{{inputs.parameters.version}}"
+          SHALLOW="{{inputs.parameters.shallow}}"
+          RECURSIVE="{{inputs.parameters.recursive}}"
+
+          ARGS=""
+          if [ "${SHALLOW}" = "true" ]; then
+            ARGS="${ARGS} --depth 1"
+          fi
+          if [ "${RECURSIVE}" = "true" ]; then
+            ARGS="${ARGS} --recurse-submodules"
+          fi
+
+          git clone ${ARGS} --branch "${VERSION}" "${REPO}" /tmp/repo
+
+          echo "Cloned ${REPO}@${VERSION}:"
+          cd /tmp/repo
+          git log --oneline -1
+      outputs:
+        artifacts:
+          - name: repo
+            path: /tmp/repo

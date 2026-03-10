@@ -1,0 +1,62 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: github-release-assets
+spec:
+  entrypoint: download-release-assets
+  arguments:
+    parameters:
+      - name: repo
+        description: "GitHub repository (owner/repo)"
+      - name: version
+        description: "Release version tag (e.g. v1.2.3)"
+      - name: pattern
+        description: "Glob pattern to filter release assets (e.g. '*.tar.gz')"
+        default: "*"
+      - name: gh-image
+        description: "Image with gh CLI"
+        default: "ghcr.io/daedaluz/argo-templates/gh:latest"
+
+  templates:
+    - name: download-release-assets
+      inputs:
+        parameters:
+          - name: repo
+          - name: version
+          - name: pattern
+          - name: gh-image
+      container:
+        image: "{{inputs.parameters.gh-image}}"
+        command: [sh, -c]
+        args:
+          - |
+            set -eu
+
+            REPO="{{inputs.parameters.repo}}"
+            VERSION="{{inputs.parameters.version}}"
+            PATTERN="{{inputs.parameters.pattern}}"
+
+            echo "Downloading assets from ${REPO}@${VERSION} matching '${PATTERN}'"
+            mkdir -p /tmp/assets
+
+            gh release download "${VERSION}" \
+              --repo "${REPO}" \
+              --pattern "${PATTERN}" \
+              --dir /tmp/assets
+
+            gh release view "${VERSION}" \
+              --repo "${REPO}" \
+              --json tagName,name,body,createdAt,publishedAt,url,author,assets \
+              > /tmp/release.json
+
+            echo "Downloaded assets:"
+            ls -la /tmp/assets/
+        envFrom:
+          - secretRef:
+              name: github-token
+      outputs:
+        artifacts:
+          - name: release-assets
+            path: /tmp/assets
+          - name: release-info
+            path: /tmp/release.json

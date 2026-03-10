@@ -1,0 +1,65 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: fetch-latest-release-assets-
+spec:
+  entrypoint: main
+  arguments:
+    parameters:
+      - name: repo
+        value: "cli/cli"
+      - name: pattern
+        value: "*.tar.gz"
+
+  templates:
+    - name: main
+      dag:
+        tasks:
+          - name: get-latest
+            templateRef:
+              name: github-latest-release
+              template: get-latest-release
+            arguments:
+              parameters:
+                - name: repo
+                  value: "{{workflow.parameters.repo}}"
+
+          - name: check-version
+            depends: get-latest
+            templateRef:
+              name: version-gate
+              template: check
+            arguments:
+              parameters:
+                - name: name
+                  value: "{{workflow.parameters.repo}}"
+                - name: version
+                  value: "{{tasks.get-latest.outputs.parameters.version}}"
+
+          - name: download-assets
+            depends: "check-version"
+            when: "{{tasks.check-version.outputs.parameters.already-processed}} == false"
+            templateRef:
+              name: github-release-assets
+              template: download-release-assets
+            arguments:
+              parameters:
+                - name: repo
+                  value: "{{workflow.parameters.repo}}"
+                - name: version
+                  value: "{{tasks.get-latest.outputs.parameters.version}}"
+                - name: pattern
+                  value: "{{workflow.parameters.pattern}}"
+
+          - name: mark-processed
+            depends: "download-assets"
+            when: "{{tasks.check-version.outputs.parameters.already-processed}} == false"
+            templateRef:
+              name: version-gate
+              template: mark-processed
+            arguments:
+              parameters:
+                - name: name
+                  value: "{{workflow.parameters.repo}}"
+                - name: version
+                  value: "{{tasks.get-latest.outputs.parameters.version}}"

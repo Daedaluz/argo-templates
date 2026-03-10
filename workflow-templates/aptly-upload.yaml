@@ -1,0 +1,92 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: aptly-upload
+spec:
+  entrypoint: upload
+  arguments:
+    parameters:
+      - name: aptly-url
+        description: "Aptly API base URL (e.g. http://aptly:8080)"
+      - name: aptly-repo
+        description: "Aptly repository name"
+      - name: upload-dir
+        description: "Upload directory name in aptly"
+        default: "argo-upload"
+      - name: cleanup
+        description: "Remove upload directory after adding to repo"
+        default: "true"
+      - name: aptly-credentials-secret
+        description: "Kubernetes secret name with 'username' and 'password' keys (optional)"
+        default: ""
+      - name: gh-image
+        description: "Image with curl and tools"
+        default: "ghcr.io/daedaluz/argo-templates/gh:latest"
+
+  templates:
+    - name: upload
+      inputs:
+        parameters:
+          - name: aptly-url
+          - name: aptly-repo
+          - name: upload-dir
+          - name: cleanup
+          - name: aptly-credentials-secret
+          - name: gh-image
+        artifacts:
+          - name: debs
+            path: /tmp/debs
+      script:
+        image: "{{inputs.parameters.gh-image}}"
+        env:
+          - name: APTLY_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: "{{inputs.parameters.aptly-credentials-secret}}"
+                key: username
+                optional: true
+          - name: APTLY_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: "{{inputs.parameters.aptly-credentials-secret}}"
+                key: password
+                optional: true
+        command: [sh]
+        source: |
+          set -eu
+
+          APTLY_URL="{{inputs.parameters.aptly-url}}"
+          REPO=$(printf '%s' "{{inputs.parameters.aptly-repo}}" | jq -sRr @uri)
+          UPLOAD_DIR="{{inputs.parameters.upload-dir}}"
+
+          AUTH=""
+          if [ -n "${APTLY_USERNAME:-}" ]; then
+            AUTH="-u ${APTLY_USERNAME}:${APTLY_PASSWORD}"
+          fi
+
+          DEBS=$(find /tmp/debs -name '*.deb' -type f)
+
+          if [ -z "${DEBS}" ]; then
+            echo "No .deb files found"
+            exit 1
+          fi
+
+          echo "Uploading .deb files to aptly (${APTLY_URL})..."
+          for deb in ${DEBS}; do
+            echo "  $(basename "${deb}")"
+            curl -fsS ${AUTH} -X POST \
+              -F "file=@${deb}" \
+              "${APTLY_URL}/api/files/${UPLOAD_DIR}"
+          done
+
+          echo "Adding uploaded files to repo '${REPO}'..."
+          curl -fsS ${AUTH} -X POST \
+            "${APTLY_URL}/api/repos/${REPO}/file/${UPLOAD_DIR}" | jq .
+
+          if [ "{{inputs.parameters.cleanup}}" = "true" ]; then
+            echo "Cleaning up upload directory..."
+            curl -fsS ${AUTH} -X DELETE \
+              "${APTLY_URL}/api/files/${UPLOAD_DIR}"
+          fi
+
+          echo "Done"

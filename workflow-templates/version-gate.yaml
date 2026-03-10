@@ -1,0 +1,84 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: version-gate
+spec:
+  arguments:
+    parameters:
+      - name: name
+        description: "Identifier for what is being tracked (e.g. repo name)"
+      - name: version
+        description: "Version to check"
+      - name: configmap
+        description: "ConfigMap used to track processed versions"
+        default: "processed-versions"
+      - name: namespace
+        description: "Namespace of the ConfigMap"
+        default: "argo"
+
+  templates:
+    - name: check
+      inputs:
+        parameters:
+          - name: name
+          - name: version
+          - name: configmap
+          - name: namespace
+      script:
+        image: bitnami/kubectl:latest
+        command: [sh]
+        source: |
+          set -eu
+          NAME="{{inputs.parameters.name}}"
+          VERSION="{{inputs.parameters.version}}"
+          CONFIGMAP="{{inputs.parameters.configmap}}"
+          NAMESPACE="{{inputs.parameters.namespace}}"
+
+          KEY=$(echo "${NAME}" | tr '/' '-')
+
+          # Ensure the configmap exists
+          kubectl get configmap "${CONFIGMAP}" -n "${NAMESPACE}" >/dev/null 2>&1 || \
+            kubectl create configmap "${CONFIGMAP}" -n "${NAMESPACE}"
+
+          CURRENT=$(kubectl get configmap "${CONFIGMAP}" -n "${NAMESPACE}" \
+            -o jsonpath="{.data.${KEY}}" 2>/dev/null || true)
+
+          if [ "${CURRENT}" = "${VERSION}" ]; then
+            echo "Version ${VERSION} already processed for ${NAME}"
+            echo "true" > /tmp/already-processed
+          else
+            echo "Version ${VERSION} not yet processed for ${NAME} (current: ${CURRENT:-none})"
+            echo "false" > /tmp/already-processed
+          fi
+      outputs:
+        parameters:
+          - name: already-processed
+            valueFrom:
+              path: /tmp/already-processed
+
+    - name: mark-processed
+      inputs:
+        parameters:
+          - name: name
+          - name: version
+          - name: configmap
+          - name: namespace
+      script:
+        image: bitnami/kubectl:latest
+        command: [sh]
+        source: |
+          set -eu
+          NAME="{{inputs.parameters.name}}"
+          VERSION="{{inputs.parameters.version}}"
+          CONFIGMAP="{{inputs.parameters.configmap}}"
+          NAMESPACE="{{inputs.parameters.namespace}}"
+
+          KEY=$(echo "${NAME}" | tr '/' '-')
+
+          kubectl get configmap "${CONFIGMAP}" -n "${NAMESPACE}" >/dev/null 2>&1 || \
+            kubectl create configmap "${CONFIGMAP}" -n "${NAMESPACE}"
+
+          kubectl patch configmap "${CONFIGMAP}" -n "${NAMESPACE}" \
+            --type merge -p "{\"data\":{\"${KEY}\":\"${VERSION}\"}}"
+
+          echo "Marked ${NAME}@${VERSION} as processed"
