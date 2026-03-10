@@ -30,9 +30,13 @@ spec:
           - name: aptly-url
           - name: aptly-repo
           - name: upload-dir
+            default: "argo-upload"
           - name: cleanup
+            default: "true"
           - name: aptly-credentials-secret
+            default: ""
           - name: gh-image
+            default: "ghcr.io/daedaluz/argo-templates/gh:latest"
         artifacts:
           - name: debs
             path: /tmp/debs

@@ -1,0 +1,88 @@
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: fetch-aptakube-debs
+spec:
+  schedules:
+    - "0 */6 * * *"
+  concurrencyPolicy: Replace
+  workflowSpec:
+    entrypoint: main
+    serviceAccountName: version-gate
+
+    templates:
+      - name: main
+        dag:
+          tasks:
+            - name: get-latest
+              templateRef:
+                name: github-latest-release
+                template: get-latest-release
+              arguments:
+                parameters:
+                  - name: repo
+                    value: "aptakube/aptakube"
+
+            - name: check-version
+              depends: get-latest
+              templateRef:
+                name: version-gate
+                template: check
+              arguments:
+                parameters:
+                  - name: name
+                    value: "aptakube/aptakube"
+                  - name: version
+                    value: "{{tasks.get-latest.outputs.parameters.version}}"
+                  - name: namespace
+                    value: "ci-cd"
+
+            - name: download-debs
+              depends: "check-version"
+              when: "{{tasks.check-version.outputs.parameters.already-processed}} == false"
+              templateRef:
+                name: github-release-assets
+                template: download-release-assets
+              arguments:
+                parameters:
+                  - name: repo
+                    value: "aptakube/aptakube"
+                  - name: version
+                    value: "{{tasks.get-latest.outputs.parameters.version}}"
+                  - name: pattern
+                    value: "*.deb"
+
+            - name: upload-to-aptly
+              depends: "download-debs"
+              when: "{{tasks.check-version.outputs.parameters.already-processed}} == false"
+              templateRef:
+                name: aptly-upload
+                template: upload
+              arguments:
+                parameters:
+                  - name: aptly-url
+                    value: "https://deb.inits.se"
+                  - name: aptly-repo
+                    value: "dev/tools"
+                  - name: aptly-credentials-secret
+                    value: "aptly-secret"
+                  - name: upload-dir
+                    value: "argo-ci-aptakube"
+                artifacts:
+                  - name: debs
+                    from: "{{tasks.download-debs.outputs.artifacts.release-assets}}"
+
+            - name: mark-processed
+              depends: "upload-to-aptly"
+              when: "{{tasks.check-version.outputs.parameters.already-processed}} == false"
+              templateRef:
+                name: version-gate
+                template: mark-processed
+              arguments:
+                parameters:
+                  - name: name
+                    value: "aptakube/aptakube"
+                  - name: version
+                    value: "{{tasks.get-latest.outputs.parameters.version}}"
+                  - name: namespace
+                    value: "ci-cd"

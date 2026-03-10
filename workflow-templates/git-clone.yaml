@@ -24,8 +24,11 @@ spec:
         parameters:
           - name: repo
           - name: version
+            default: "HEAD"
           - name: shallow
+            default: "true"
           - name: recursive
+            default: "false"
       script:
         image: ghcr.io/daedaluz/argo-templates/gh:latest
         command: [sh]
@@ -54,3 +57,5 @@ spec:
         artifacts:
           - name: repo
             path: /tmp/repo
+            archive:
+              none: {}

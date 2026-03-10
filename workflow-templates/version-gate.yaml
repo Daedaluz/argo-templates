@@ -14,7 +14,7 @@ spec:
         default: "processed-versions"
       - name: namespace
         description: "Namespace of the ConfigMap"
-        default: "argo"
+        default: "ci-cd"
 
   templates:
     - name: check
@@ -23,7 +23,9 @@ spec:
           - name: name
           - name: version
           - name: configmap
+            default: "processed-versions"
           - name: namespace
+            default: "ci-cd"
       script:
         image: bitnami/kubectl:latest
         command: [sh]
@@ -62,7 +64,9 @@ spec:
           - name: name
           - name: version
           - name: configmap
+            default: "processed-versions"
           - name: namespace
+            default: "ci-cd"
       script:
         image: bitnami/kubectl:latest
         command: [sh]

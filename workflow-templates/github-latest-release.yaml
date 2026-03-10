@@ -18,6 +18,7 @@ spec:
         parameters:
           - name: repo
           - name: gh-image
+            default: "ghcr.io/daedaluz/argo-templates/gh:latest"
       container:
         image: "{{inputs.parameters.gh-image}}"
         command: [sh, -c]
@@ -32,7 +33,7 @@ spec:
 
             gh release view --repo "${REPO}" \
               --json tagName,name,body,createdAt,publishedAt,url,author,assets \
-              > /tmp/release.json
+              | jq . > /tmp/release.json
 
             echo "${TAG}" > /tmp/version
         envFrom:
@@ -46,3 +47,5 @@ spec:
         artifacts:
           - name: release-info
             path: /tmp/release.json
+            archive:
+              none: {}
