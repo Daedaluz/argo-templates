@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-IMAGE="${1:-ghcr.io/daedaluz/argo-templates/gh}"
+REPO="${1:-ghcr.io/daedaluz/argo-templates}"
 TAG="${2:-latest}"
 
 GIT_SHA=$(git rev-parse HEAD)
@@ -15,9 +15,13 @@ if [ -n "${GIT_TAG}" ]; then
   LABELS="${LABELS} --label org.opencontainers.image.version=${GIT_TAG}"
 fi
 
-docker buildx build \
-  --platform linux/amd64,linux/arm64 \
-  --tag "${IMAGE}:${TAG}" \
-  ${LABELS} \
-  --push \
-  .
+for image in gh deb; do
+  echo "=== Building ${REPO}/${image}:${TAG} ==="
+  docker buildx build \
+    --platform linux/amd64,linux/arm64 \
+    --tag "${REPO}/${image}:${TAG}" \
+    --file "Dockerfile.${image}" \
+    ${LABELS} \
+    --push \
+    .
+done

@@ -1,0 +1,15 @@
+FROM debian:trixie-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV NO_COLOR=1
+
+RUN apt update && apt install -y --no-install-recommends \
+    dpkg-dev \
+    curl \
+    jq \
+    ca-certificates && \
+    curl -fsSL https://deb.inits.se/x/sources/inits/dev | tee /etc/apt/sources.list.d/inits-dev.sources && \
+    apt update && apt upgrade -y && \
+    apt install golang/dev
+
+CMD ["bash"]

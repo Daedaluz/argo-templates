@@ -1,0 +1,140 @@
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: fetch-helm-debs
+spec:
+  schedules:
+    - "0 */6 * * *"
+  concurrencyPolicy: Replace
+  workflowSpec:
+    entrypoint: main
+    serviceAccountName: version-gate
+
+    templates:
+      - name: main
+        dag:
+          tasks:
+            - name: get-latest
+              templateRef:
+                name: github-latest-release
+                template: get-latest-release
+              arguments:
+                parameters:
+                  - name: repo
+                    value: "helm/helm"
+
+            - name: check-version
+              depends: get-latest
+              templateRef:
+                name: version-gate
+                template: check
+              arguments:
+                parameters:
+                  - name: name
+                    value: "helm/helm"
+                  - name: version
+                    value: "{{tasks.get-latest.outputs.parameters.version}}"
+                  - name: namespace
+                    value: "ci-cd"
+
+            - name: build-helm-debs
+              depends: "check-version"
+              when: "{{tasks.check-version.outputs.parameters.already-processed}} == false"
+              template: build-helm-debs
+              arguments:
+                parameters:
+                  - name: version
+                    value: "{{tasks.get-latest.outputs.parameters.version}}"
+
+            - name: upload-to-aptly
+              depends: "build-helm-debs"
+              when: "{{tasks.check-version.outputs.parameters.already-processed}} == false"
+              templateRef:
+                name: aptly-upload
+                template: upload
+              arguments:
+                parameters:
+                  - name: aptly-url
+                    value: "https://deb.inits.se"
+                  - name: aptly-repo
+                    value: "dev/tools"
+                  - name: aptly-credentials-secret
+                    value: "aptly-secret"
+                  - name: upload-dir
+                    value: "argo-ci-helm"
+                  - name: "cleanup"
+                    value: "false"
+                artifacts:
+                  - name: debs
+                    from: "{{tasks.build-helm-debs.outputs.artifacts.debs}}"
+
+            - name: mark-processed
+              depends: "upload-to-aptly"
+              when: "{{tasks.check-version.outputs.parameters.already-processed}} == false"
+              templateRef:
+                name: version-gate
+                template: mark-processed
+              arguments:
+                parameters:
+                  - name: name
+                    value: "helm/helm"
+                  - name: version
+                    value: "{{tasks.get-latest.outputs.parameters.version}}"
+                  - name: namespace
+                    value: "ci-cd"
+
+      - name: build-helm-debs
+        inputs:
+          parameters:
+            - name: version
+          artifacts:
+            - name: helm-amd64
+              path: /tmp/src/amd64
+              http:
+                url: "https://get.helm.sh/helm-{{inputs.parameters.version}}-linux-amd64.tar.gz"
+            - name: helm-arm64
+              path: /tmp/src/arm64
+              http:
+                url: "https://get.helm.sh/helm-{{inputs.parameters.version}}-linux-arm64.tar.gz"
+        script:
+          image: ghcr.io/daedaluz/argo-templates/deb:latest
+          command: [sh]
+          source: |
+            set -eu
+
+            VERSION="{{inputs.parameters.version}}"
+            DEB_VERSION=$(echo "${VERSION}" | sed 's/^v//')
+
+            mkdir -p /tmp/debs
+
+            for ARCH in amd64 arm64; do
+              PKGDIR=$(mktemp -d)
+              mkdir -m 0755 -p "${PKGDIR}/DEBIAN"
+              mkdir -p "${PKGDIR}/usr/local/bin"
+
+              cp "/tmp/src/${ARCH}/helm" "${PKGDIR}/usr/local/bin/helm"
+              chmod 755 "${PKGDIR}/usr/local/bin/helm"
+
+              cat > "${PKGDIR}/DEBIAN/control" <<CTRL
+            Package: helm
+            Version: ${DEB_VERSION}
+            Architecture: ${ARCH}
+            Maintainer: Tobias Assarsson <tobias.assarsson@gmail.com>
+            Description: The Kubernetes Package Manager
+            Homepage: https://helm.sh
+            Section: admin
+            Priority: optional
+            CTRL
+              sed -i 's/^[[:space:]]*//' "${PKGDIR}/DEBIAN/control"
+
+              dpkg-deb --build "${PKGDIR}" "/tmp/debs/helm_${DEB_VERSION}_${ARCH}.deb"
+
+              rm -rf "${PKGDIR}"
+            done
+
+            echo "Built:"
+            ls -la /tmp/debs/
+        outputs:
+          artifacts:
+            - name: debs
+              path: /tmp/debs

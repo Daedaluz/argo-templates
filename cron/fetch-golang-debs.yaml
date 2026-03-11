@@ -1,0 +1,152 @@
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: fetch-golang-debs
+spec:
+  schedules:
+    - "0 */6 * * *"
+  concurrencyPolicy: Replace
+  workflowSpec:
+    entrypoint: main
+    serviceAccountName: version-gate
+
+    templates:
+      - name: main
+        dag:
+          tasks:
+            - name: get-latest
+              template: get-latest-go
+
+            - name: check-version
+              depends: get-latest
+              templateRef:
+                name: version-gate
+                template: check
+              arguments:
+                parameters:
+                  - name: name
+                    value: "golang/go"
+                  - name: version
+                    value: "{{tasks.get-latest.outputs.parameters.version}}"
+                  - name: namespace
+                    value: "ci-cd"
+
+            - name: build-golang-debs
+              depends: "check-version"
+              when: "{{tasks.check-version.outputs.parameters.already-processed}} == false"
+              template: build-golang-debs
+              arguments:
+                parameters:
+                  - name: version
+                    value: "{{tasks.get-latest.outputs.parameters.version}}"
+
+            - name: upload-to-aptly
+              depends: "build-golang-debs"
+              when: "{{tasks.check-version.outputs.parameters.already-processed}} == false"
+              templateRef:
+                name: aptly-upload
+                template: upload
+              arguments:
+                parameters:
+                  - name: aptly-url
+                    value: "https://deb.inits.se"
+                  - name: aptly-repo
+                    value: "dev/tools"
+                  - name: aptly-credentials-secret
+                    value: "aptly-secret"
+                  - name: upload-dir
+                    value: "argo-ci-golang"
+                  - name: cleanup
+                    value: "false"
+                artifacts:
+                  - name: debs
+                    from: "{{tasks.build-golang-debs.outputs.artifacts.debs}}"
+
+            - name: mark-processed
+              depends: "upload-to-aptly"
+              when: "{{tasks.check-version.outputs.parameters.already-processed}} == false"
+              templateRef:
+                name: version-gate
+                template: mark-processed
+              arguments:
+                parameters:
+                  - name: name
+                    value: "golang/go"
+                  - name: version
+                    value: "{{tasks.get-latest.outputs.parameters.version}}"
+                  - name: namespace
+                    value: "ci-cd"
+
+      - name: get-latest-go
+        script:
+          image: ghcr.io/daedaluz/argo-templates/gh:latest
+          command: [sh]
+          source: |
+            set -eu
+            VERSION=$(curl -fsSL 'https://go.dev/dl/?mode=json' | jq -r '.[0].version')
+            echo "Latest Go: ${VERSION}"
+            echo "${VERSION}" > /tmp/version
+        outputs:
+          parameters:
+            - name: version
+              valueFrom:
+                path: /tmp/version
+
+      - name: build-golang-debs
+        inputs:
+          parameters:
+            - name: version
+          artifacts:
+            - name: go-amd64
+              path: /tmp/src/amd64
+              http:
+                url: "https://go.dev/dl/{{inputs.parameters.version}}.linux-amd64.tar.gz"
+            - name: go-arm64
+              path: /tmp/src/arm64
+              http:
+                url: "https://go.dev/dl/{{inputs.parameters.version}}.linux-arm64.tar.gz"
+        script:
+          image: ghcr.io/daedaluz/argo-templates/deb:latest
+          command: [sh]
+          source: |
+            set -eu
+
+            VERSION="{{inputs.parameters.version}}"
+            DEB_VERSION=$(echo "${VERSION}" | sed 's/^go//')
+
+            mkdir -p /tmp/debs
+
+            for ARCH in amd64 arm64; do
+              PKGDIR=$(mktemp -d)
+              mkdir -m 0755 -p "${PKGDIR}/DEBIAN"
+              mkdir -p "${PKGDIR}/usr/local/go"
+
+              cp -a /tmp/src/${ARCH}/* "${PKGDIR}/usr/local/go/"
+
+              mkdir -p "${PKGDIR}/usr/local/bin"
+              ln -s /usr/local/go/bin/go "${PKGDIR}/usr/local/bin/go"
+              ln -s /usr/local/go/bin/gofmt "${PKGDIR}/usr/local/bin/gofmt"
+
+              cat > "${PKGDIR}/DEBIAN/control" <<CTRL
+            Package: golang
+            Version: ${DEB_VERSION}
+            Architecture: ${ARCH}
+            Maintainer: Tobias Assarsson <tobias.assarsson@gmail.com>
+            Description: The Go programming language
+            Homepage: https://go.dev
+            Section: devel
+            Priority: optional
+            CTRL
+              sed -i 's/^[[:space:]]*//' "${PKGDIR}/DEBIAN/control"
+
+              dpkg-deb --build "${PKGDIR}" "/tmp/debs/golang_${DEB_VERSION}_${ARCH}.deb"
+
+              rm -rf "${PKGDIR}"
+            done
+
+            echo "Built:"
+            ls -la /tmp/debs/
+        outputs:
+          artifacts:
+            - name: debs
+              path: /tmp/debs
